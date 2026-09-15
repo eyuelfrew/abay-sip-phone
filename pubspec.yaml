@@ -1,0 +1,44 @@
+name: abay
+description: Abay Softphone — a modern SIP client that competes with Zoiper.
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  # SIP / VoIP
+  sip_ua: ^1.1.0
+  flutter_webrtc: ^1.6.2
+
+  # State & storage
+  provider: ^6.1.2
+  shared_preferences: ^2.3.2
+  path_provider: ^2.1.4
+
+  # Permissions & device
+  permission_handler: ^11.3.1
+  device_info_plus: ^10.1.2
+  package_info_plus: ^8.0.2
+  connectivity_plus: ^6.0.5
+
+  # UX
+  intl: any
+  uuid: ^4.5.0
+  collection: ^1.18.0
+  url_launcher: ^6.3.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  test: any
+
+flutter:
+  uses-material-design: true
