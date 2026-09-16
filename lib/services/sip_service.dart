@@ -5,6 +5,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:sip_ua/sip_ua.dart' hide RegistrationState;
 import 'package:sip_ua/sip_ua.dart' as sip_ua show RegistrationState;
 
+import 'call_platform.dart';
 import '../core/utils/formatters.dart';
 import '../models/sip_account.dart';
 
@@ -138,6 +139,10 @@ class SipService extends ChangeNotifier {
   Future<void> init() async {
     _helper ??= SIPUAHelper();
     _helper!.addSipUaHelperListener(_SipListener(this));
+    await CallPlatform.init();
+    CallPlatform.onAnswerFromNotification = () => answer();
+    CallPlatform.onRejectFromNotification = () => reject();
+    await CallPlatform.startService();
   }
 
   Future<void> register(SipAccount account) async {
@@ -146,6 +151,7 @@ class SipService extends ChangeNotifier {
     final helper = _helper!;
     _connectWatchdog?.cancel();
     _registering = true;
+    _urlIndex = 0;
 
     try {
       if (helper.registered) {
@@ -157,21 +163,34 @@ class SipService extends ChangeNotifier {
       }
     } catch (_) {}
 
-    await _startWithUrl(account, account.wsUri, isPrimary: true);
+    final candidates = account.wsUriCandidates;
+    // Prefer classic TCP :5060 first when user picked TCP/UDP (Zoiper-style).
+    final ordered = <String>[
+      if (account.transport == SipTransport.tcp ||
+          account.transport == SipTransport.udp)
+        'tcp://${account.host}:5060',
+      ...candidates,
+    ];
+    final seen = <String>{};
+    final unique = [for (final u in ordered) if (seen.add(u)) u];
+    debugPrint('SIP connect candidates: ${unique.join(' | ')}');
+    await _startWithTarget(account, unique[_urlIndex], candidates: unique);
   }
 
-  Future<void> _startWithUrl(
+  int _urlIndex = 0;
+
+  Future<void> _startWithTarget(
     SipAccount account,
-    String wsUrl, {
-    required bool isPrimary,
+    String target, {
+    required List<String> candidates,
   }) async {
     final helper = _helper!;
-    _setReg(RegistrationState.connecting, 'Connecting $wsUrl…');
-    debugPrint('SIP start → $wsUrl');
+    final isTcp = target.startsWith('tcp://');
+    final label = isTcp ? 'SIP TCP $target' : target;
+    _setReg(RegistrationState.connecting, 'Connecting $label…');
+    debugPrint('SIP start → $label');
 
     final settings = UaSettings();
-    settings.transportType = TransportType.WS;
-    settings.webSocketUrl = wsUrl;
     settings.uri = account.uri;
     settings.authorizationUser =
         account.authUser.isEmpty ? account.username : account.authUser;
@@ -185,11 +204,22 @@ class SipService extends ChangeNotifier {
         : DtmfMode.RFC2833;
     settings.webSocketSettings.allowBadCertificate = true;
     settings.webSocketSettings.userAgent = 'Abay Softphone/1.0';
+    settings.tcpSocketSettings.allowBadCertificate = true;
     settings.connectionRecoveryMaxInterval = 8;
     settings.connectionRecoveryMinInterval = 2;
     settings.iceServers = [
       {'urls': 'stun:stun.l.google.com:19302'},
     ];
+
+    if (isTcp) {
+      // Classic SIP over TCP (same idea as Zoiper on :5060).
+      settings.transportType = TransportType.TCP;
+      settings.host = account.host;
+      settings.port = '5060';
+    } else {
+      settings.transportType = TransportType.WS;
+      settings.webSocketUrl = target;
+    }
 
     try {
       await helper.start(settings);
@@ -205,29 +235,40 @@ class SipService extends ChangeNotifier {
     }
 
     _connectWatchdog?.cancel();
-    _connectWatchdog = Timer(const Duration(seconds: 8), () async {
+    _connectWatchdog = Timer(const Duration(seconds: 6), () async {
       if (!_registering) return;
       if (_regState == RegistrationState.registered) return;
       if (_regState != RegistrationState.connecting) return;
-      if (!isPrimary) {
-        _setReg(
-          RegistrationState.failed,
-          'Cannot reach $wsUrl — check host, port, and path',
+
+      _urlIndex++;
+      if (_urlIndex < candidates.length) {
+        debugPrint('SIP timeout on $target → next ${candidates[_urlIndex]}');
+        try {
+          helper.stop();
+        } catch (_) {}
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        await _startWithTarget(
+          account,
+          candidates[_urlIndex],
+          candidates: candidates,
         );
-        _errorController.add(
-          'Could not connect to $wsUrl.\n'
-          'Tried ${account.wsUri} and ${account.alternateWsUri}.',
-        );
-        _registering = false;
         return;
       }
-      debugPrint(
-          'SIP primary connect timeout → trying ${account.alternateWsUri}');
-      try {
-        helper.stop();
-      } catch (_) {}
-      await Future<void>.delayed(const Duration(milliseconds: 300));
-      await _startWithUrl(account, account.alternateWsUri, isPrimary: false);
+
+      _setReg(
+        RegistrationState.failed,
+        'Cannot reach SIP on ${account.host}',
+      );
+      _errorController.add(
+        'Could not connect to ${account.host}.\n'
+        'Tried:\n${candidates.map((u) => '• $u').join('\n')}\n\n'
+        'Ports:\n'
+        '  TCP 5060 — classic SIP (Zoiper)\n'
+        '  WSS 8089/ws — WebSocket TLS\n'
+        '  WS 8088/ws — WebSocket\n'
+        'TLS 5061 is not supported by this stack (plain TCP/WS only).',
+      );
+      _registering = false;
     });
   }
 
@@ -261,10 +302,26 @@ class SipService extends ChangeNotifier {
       domain: account.effectiveDomain,
     );
     debugPrint('SIP INVITE → $uri via ${account.wsUri}');
+    // Set active immediately so the call UI can open without waiting for SIP events.
+    _active = ActiveCallInfo(
+      callId: 'pending',
+      remoteUri: Formatters.prettyUri(uri),
+      displayName: Formatters.prettyUri(uri),
+      incoming: false,
+      state: AbayCallState.connecting,
+      startedAt: DateTime.now(),
+    );
+    _pushActive();
     try {
       final ok = await helper.call(uri, voiceOnly: !video);
-      if (!ok) _errorController.add('Unable to start call');
+      if (!ok) {
+        _active = null;
+        _pushActive();
+        _errorController.add('Unable to start call');
+      }
     } catch (e) {
+      _active = null;
+      _pushActive();
       _errorController.add('Call failed: $e');
     }
   }
@@ -274,6 +331,18 @@ class SipService extends ChangeNotifier {
     if (incoming == null) return;
     final call = _calls[incoming.callId];
     if (call == null) return;
+    // Promote to active immediately so ActiveCallScreen has data.
+    _active = ActiveCallInfo(
+      callId: incoming.callId,
+      remoteUri: incoming.remoteUri,
+      displayName: incoming.displayName,
+      incoming: true,
+      state: AbayCallState.confirmed,
+      startedAt: DateTime.now(),
+    );
+    _incoming = null;
+    _pushIncoming();
+    _pushActive();
     try {
       call.answer({'mediaConstraints': _mediaConstraints(!video)});
     } catch (e) {
@@ -443,6 +512,10 @@ class SipService extends ChangeNotifier {
         _connectWatchdog?.cancel();
         _registering = false;
         _setReg(RegistrationState.registered, 'Registered');
+        CallPlatform.showRegistered(
+          'Abay',
+          'Registered · ${_account?.username ?? ''}',
+        );
         break;
       case RegistrationStateEnum.UNREGISTERED:
         _setReg(RegistrationState.unregistered, 'Unregistered');
@@ -490,19 +563,30 @@ class SipService extends ChangeNotifier {
     final display = (call.remote_display_name?.isNotEmpty ?? false)
         ? call.remote_display_name!
         : remote;
-    final isRemote = state.originator == Originator.remote;
     final hasVideo = !(state.audio ?? call.voiceOnly);
 
     switch (state.state) {
       case CallStateEnum.CALL_INITIATION:
-        if (isRemote && call.direction == Direction.incoming) {
-          _incoming = IncomingCallInfo(
-            callId: id,
-            remoteUri: remote,
-            displayName: display,
-            video: hasVideo,
-          );
-          _pushIncoming();
+        // Incoming INVITE — direction is reliable; originator may be missing.
+        if (call.direction == Direction.incoming) {
+          if (_incoming?.callId != id) {
+            final info = IncomingCallInfo(
+              callId: id,
+              remoteUri: remote,
+              displayName: display,
+              video: hasVideo,
+            );
+            _incoming = info;
+            _calls[id] = call;
+            _pushIncoming();
+            debugPrint('SIP incoming call from $remote id=$id');
+            // Fire-and-forget — never block the SIP event thread.
+            unawaited(CallPlatform.bringToForeground());
+            unawaited(CallPlatform.showIncoming(
+              display.isNotEmpty ? display : 'Incoming call',
+              remote,
+            ));
+          }
           if (_account?.autoAnswer == true) {
             final delay = _account?.autoAnswerDelayMs ?? 0;
             Future<void>.delayed(Duration(milliseconds: delay), () {
@@ -526,7 +610,21 @@ class SipService extends ChangeNotifier {
         break;
       case CallStateEnum.CONNECTING:
       case CallStateEnum.PROGRESS:
-        if (_incoming?.callId != id) {
+        if (_incoming?.callId == id) break;
+        if (call.direction == Direction.incoming && _incoming == null) {
+          final info = IncomingCallInfo(
+            callId: id,
+            remoteUri: remote,
+            displayName: display,
+            video: hasVideo,
+          );
+          _incoming = info;
+          _pushIncoming();
+          unawaited(CallPlatform.showIncoming(
+            display.isNotEmpty ? display : 'Incoming call',
+            remote,
+          ));
+        } else if (_incoming == null) {
           _active = (_active ??
                   ActiveCallInfo(
                     callId: id,
@@ -545,14 +643,20 @@ class SipService extends ChangeNotifier {
       case CallStateEnum.UNMUTED:
       case CallStateEnum.MUTED:
       case CallStateEnum.STREAM:
-        _incoming = null;
-        _pushIncoming();
+        final hadIncoming = _incoming != null;
+        if (hadIncoming) {
+          _incoming = null;
+          _pushIncoming();
+        }
+        // Don't restart ticker or spam notifications on every STREAM/MUTE event.
+        final alreadyUp = _active?.state == AbayCallState.confirmed &&
+            _active?.callId == id;
         final started = _active?.startedAt ?? DateTime.now();
         _active = ActiveCallInfo(
           callId: id,
           remoteUri: remote,
           displayName: display,
-          incoming: call.direction == Direction.incoming,
+          incoming: _active?.incoming ?? call.direction == Direction.incoming,
           video: hasVideo,
           state: AbayCallState.confirmed,
           startedAt: started,
@@ -560,7 +664,13 @@ class SipService extends ChangeNotifier {
           onHold: _onHold,
           speaker: _speaker,
         );
-        _startTicker();
+        if (!alreadyUp) {
+          CallPlatform.showOngoing(
+            display.isNotEmpty ? display : 'On call',
+            remote,
+          );
+          _startTicker();
+        }
         _pushActive();
         break;
       case CallStateEnum.HOLD:
@@ -581,6 +691,14 @@ class SipService extends ChangeNotifier {
         _muted = false;
         _onHold = false;
         _calls.remove(id);
+        CallPlatform.clearCallNotifications();
+        final who = _account?.username ?? '';
+        if (_regState == RegistrationState.registered) {
+          CallPlatform.showRegistered(
+            'Abay',
+            'Registered · $who',
+          );
+        }
         if (was != null && state.state == CallStateEnum.FAILED) {
           final cause = state.cause?.reason_phrase ?? 'unknown';
           final code = state.cause?.status_code;

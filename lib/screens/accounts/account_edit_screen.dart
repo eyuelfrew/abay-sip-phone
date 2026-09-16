@@ -186,6 +186,13 @@ class _AccountEditScreenState extends State<AccountEditScreen> {
       final serverRaw = _server.text.trim();
       final parsed = draft.copyWith(server: serverRaw);
       final typedPort = parsed.serverPortHint;
+      // Classic SIP ports (Zoiper) are not WebSocket — remap for sip_ua.
+      var port = typedPort ?? sel.port;
+      if (port == 5061 || port == 5060 || port == 5062) {
+        port = sel.kind == TransportKind.wss ? 8089 : 8088;
+      }
+      if (sel.kind == TransportKind.wss && (port == 8088)) port = 8089;
+      if (sel.kind == TransportKind.ws && port == 8089) port = 8088;
       final account = draft.copyWith(
         displayName: _displayName.text.trim().isEmpty
             ? _username.text.trim()
@@ -199,7 +206,7 @@ class _AccountEditScreenState extends State<AccountEditScreen> {
         domain: _domain.text.trim().isEmpty
             ? parsed.host
             : _domain.text.trim(),
-        port: typedPort ?? sel.port,
+        port: port,
         transport: _transportFrom(sel),
         autoDetectTransport: true,
         enabled: true,
@@ -356,21 +363,21 @@ class _AccountEditScreenState extends State<AccountEditScreen> {
             if (_selected != null) ...[
               const SizedBox(height: 10),
               Text(
-                'Will connect over ${_selected!.label} · port ${_selected!.port}',
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: AppColors.success,
-                      fontWeight: FontWeight.w600,
-                    ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Native SIP (PJSIP) — Zoiper-style TLS/RTP',
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).hintColor,
-                    ),
-              ),
+              'Will connect over ${_selected!.label} · port ${_selected!.port}/ws',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppColors.success,
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Abay uses SIP over WebSocket (Asterisk :8089/ws). Classic SIP :5061 is for Zoiper only.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).hintColor,
+                  ),
+            ),
             ],
           ],
         ),
@@ -487,11 +494,15 @@ class _NetworkPanel extends StatelessWidget {
                         for (final e in const [
                           TransportEndpoint(
                               kind: TransportKind.wss,
-                              port: 7443,
+                              port: 8089,
                               status: ProbeStatus.idle),
                           TransportEndpoint(
                               kind: TransportKind.ws,
-                              port: 8080,
+                              port: 8088,
+                              status: ProbeStatus.idle),
+                          TransportEndpoint(
+                              kind: TransportKind.ws,
+                              port: 5060,
                               status: ProbeStatus.idle),
                         ])
                           _EndpointTile(

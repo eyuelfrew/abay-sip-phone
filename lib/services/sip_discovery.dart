@@ -75,9 +75,9 @@ class DiscoveryResult {
 class SipDiscoveryService {
   SipDiscoveryService._();
 
-  // Classic SIP ports (PJSIP / Asterisk / Zoiper-style).
-  static const List<int> wssPorts = [5061, 5062]; // TLS
-  static const List<int> wsPorts = [5060, 5063]; // TCP/UDP
+  // Your ports: 5060 classic TCP SIP, 8088 WS, 8089 WSS. (5061 TLS not in sip_ua.)
+  static const List<int> wssPorts = [8089];
+  static const List<int> wsPorts = [8088, 5060];
 
   static bool isIpv4(String host) {
     final t = host.trim();
@@ -221,12 +221,12 @@ class SipDiscoveryService {
     if (available.isNotEmpty) {
       best = available.first;
     } else if (network.connected) {
-      // Fallback defaults when ports are filtered but host is a known PBX domain.
+      // Asterisk default WSS WebSocket port + path /ws
       best = TransportEndpoint(
         kind: TransportKind.wss,
-        port: isIpHost(cleaned) ? 8080 : 7443,
+        port: 8089,
         status: ProbeStatus.checking,
-        detail: 'Using default (no open port detected)',
+        detail: 'Using default 8089/ws',
       );
     }
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
 import 'app.dart';
@@ -8,6 +9,7 @@ import 'providers/contact_provider.dart';
 import 'providers/history_provider.dart';
 import 'providers/message_provider.dart';
 import 'providers/settings_provider.dart';
+import 'services/call_platform.dart';
 import 'services/sip_service.dart';
 
 Future<void> main() async {
@@ -20,6 +22,10 @@ Future<void> main() async {
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
   ));
+
+  await _requestRuntimePermissions();
+  await CallPlatform.init();
+  await CallPlatform.startService();
 
   final sipService = SipService();
   await sipService.init();
@@ -54,4 +60,16 @@ Future<void> main() async {
       child: const AbayApp(),
     ),
   );
+}
+
+Future<void> _requestRuntimePermissions() async {
+  try {
+    await [
+      Permission.microphone,
+      Permission.notification,
+      Permission.phone,
+    ].request();
+  } catch (e) {
+    debugPrint('Permission request failed: $e');
+  }
 }

@@ -3,15 +3,16 @@ import 'package:flutter/material.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/utils/formatters.dart';
 import '../../services/sip_service.dart';
+import 'active_call_screen.dart';
 
 class IncomingCallOverlay {
-  static void show(
+  static Future<void> show(
     BuildContext context,
     IncomingCallInfo incoming,
     SipService sip,
-  ) {
+  ) async {
     final root = Navigator.of(context, rootNavigator: true);
-    root.push(
+    await root.push(
       PageRouteBuilder(
         opaque: false,
         barrierDismissible: false,
@@ -97,18 +98,21 @@ class IncomingCallScreen extends StatelessWidget {
                       color: AppColors.danger,
                       icon: Icons.call_end,
                       label: 'Decline',
-                      onTap: () {
-                        sip.reject();
+                      onTap: () async {
                         Navigator.of(context).maybePop();
+                        await sip.reject();
                       },
                     ),
                     _BigCallButton(
                       color: AppColors.success,
                       icon: Icons.call,
                       label: 'Answer',
-                      onTap: () {
-                        sip.answer();
+                      onTap: () async {
                         Navigator.of(context).maybePop();
+                        await sip.answer();
+                        if (context.mounted) {
+                          await ActiveCallScreen.open(context);
+                        }
                       },
                     ),
                   ],

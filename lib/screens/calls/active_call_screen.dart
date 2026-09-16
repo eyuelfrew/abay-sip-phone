@@ -36,16 +36,22 @@ class _ActiveCallScreenState extends State<ActiveCallScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final sip = context.read<SipService>();
       _sub = sip.activeCallStream.listen((call) {
-        if (call == null && mounted) {
+        if (call == null && mounted && _allowPop) {
           Navigator.of(context).maybePop();
         }
       });
-      // Auto-close if already gone.
-      if (sip.activeCall == null && mounted) {
-        Navigator.of(context).maybePop();
-      }
+      // Grace period: call state may arrive a frame later.
+      Future<void>.delayed(const Duration(milliseconds: 1200), () {
+        if (!mounted) return;
+        _allowPop = true;
+        if (sip.activeCall == null) {
+          Navigator.of(context).maybePop();
+        }
+      });
     });
   }
+
+  bool _allowPop = false;
 
   @override
   void dispose() {

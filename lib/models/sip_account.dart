@@ -30,7 +30,7 @@ class SipAccount {
     required this.password,
     required this.domain,
     required this.server,
-    this.port = 5061,
+    this.port = 8089,
     this.transport = SipTransport.tls,
     this.enabled = true,
     this.useSrtp = false,
@@ -50,13 +50,20 @@ class SipAccount {
     return _splitServer(s).host;
   }
 
-  /// Optional WebSocket path (Asterisk `/ws`, 3CX `/websocket`, …).
-  /// Defaults to `/ws` on Asterisk's standard 8089/8088 HTTP ports.
+  /// Optional WebSocket path. Asterisk always uses `/ws`.
   String get wsPath {
     final p = _splitServer(server.trim()).path;
     if (p.isNotEmpty) return p;
-    if (port == 8089 || port == 8088) return '/ws';
-    return '';
+    return '/ws';
+  }
+
+  /// Effective WebSocket port — classic SIP ports are remapped for WS.
+  int get effectiveWsPort {
+    final p = port;
+    // 5060/5061 are SIP UDP/TLS (what Zoiper uses). Abay needs HTTP WebSocket.
+    if (p == 5061 || p == 5060 || p == 5062) return 8089;
+    if (p == 0) return 8089;
+    return p;
   }
 
   /// Port typed in the server field, if any.
@@ -87,28 +94,30 @@ class SipAccount {
 
   /// Destination URI for dialing (classic SIP).
   String get dialUri => 'sip:$username@$effectiveDomain';
+
+  /// Primary WebSocket URL (SIP over WS/WSS for sip_ua).
   String get wsUri {
-    final scheme = switch (transport) {
-      SipTransport.tls => 'wss',
-      SipTransport.tcp => 'ws',
-      SipTransport.udp => 'ws',
-    };
-    final h = host;
-    final p = port;
+    final scheme = transport == SipTransport.tls ? 'wss' : 'ws';
+    final port = effectiveWsPort;
     final path = wsPath;
-    return '$scheme://$h:$p$path';
+    return '$scheme://$host:$port$path';
   }
 
-  /// Alternate URL to try if the primary transport fails (WSS ↔ WS).
-  String get alternateWsUri {
-    if (transport == SipTransport.tls) {
-      // WSS failed → plain WS (Asterisk often has 8088 HTTP, path /ws).
-      final altPort = port == 8089 ? 8088 : 8080;
-      final altPath = altPort == 8088 ? '/ws' : wsPath;
-      return 'ws://$host:$altPort$altPath';
-    }
-    // WS failed → WSS on Asterisk TLS HTTP port.
-    return 'wss://$host:8089/ws';
+  /// Candidates to try in order when the primary URL fails.
+  /// Includes classic SIP TCP :5060 and WebSocket :8089/:8088.
+  List<String> get wsUriCandidates {
+    final h = host;
+    final primary = wsUri;
+    final list = <String>[
+      primary,
+      // Classic SIP (Zoiper-style signaling) — sip_ua TCP transport
+      'tcp://$h:5060',
+      // Asterisk WebSocket
+      'wss://$h:8089/ws',
+      'ws://$h:8088/ws',
+    ];
+    final seen = <String>{};
+    return [for (final u in list) if (seen.add(u)) u];
   }
 
   static ({String host, int? port, String path}) _splitServer(String raw) {
