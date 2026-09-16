@@ -1,29 +1,72 @@
-# Flutter/Dart
+# Flutter / Dart
 .dart_tool/
 .packages
-build/
 .flutter-plugins
 .flutter-plugins-dependencies
 .pub-cache/
 .pub/
+build/
 coverage/
+*.g.dart
+*.freezed.dart
+.metadata
 
 # IDE
 .idea/
 .vscode/
 *.iml
+*.ipr
+*.iws
+.history/
 
-# Platform
-**/GeneratedPluginRegistrant.*
+# Android
 android/.gradle/
 android/local.properties
+android/captures/
+android/.cxx/
+android/key.properties
+**/GeneratedPluginRegistrant.*
+*.jks
+*.keystore
+*.p12
+*.pem
+
+# iOS / macOS
 ios/Pods/
 ios/.symlinks/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/Flutter/Generated.xcconfig
+ios/Flutter/app.flx
+ios/Flutter/app.zip
+ios/Flutter/flutter_assets/
+ios/ServiceDefinitions.json
+ios/Runner/GeneratedPluginRegistrant.*
 macos/Pods/
+macos/Flutter/ephemeral/
+macos/Flutter/GeneratedPluginRegistrant.swift
+
+# Linux / Windows
 linux/flutter/ephemeral/
 windows/flutter/ephemeral/
+windows/flutter/generated_plugin_registrant.cc
+windows/flutter/generated_plugin_registrant.h
+windows/flutter/generated_plugins.cmake
 
-# Misc
-*.log
-.DS_Store
+# Tooling / local
+.mimo-sessions/
 _tmp/
+*.log
+logs/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Secrets / local config (never commit)
+.env
+.env.*
+!.env.example
+secrets.json
+**/google-services.json
+**/GoogleService-Info.plist
