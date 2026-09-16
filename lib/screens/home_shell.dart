@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../core/navigation/home_nav.dart';
 import '../core/theme/app_colors.dart';
 import '../providers/account_provider.dart';
 import '../providers/history_provider.dart';
@@ -20,7 +21,24 @@ class HomeShell extends StatefulWidget {
 }
 
 class _HomeShellState extends State<HomeShell> {
-  int _index = 0;
+  @override
+  void initState() {
+    super.initState();
+    HomeNav.tabIndex.addListener(_onTabChanged);
+  }
+
+  @override
+  void dispose() {
+    HomeNav.tabIndex.removeListener(_onTabChanged);
+    super.dispose();
+  }
+
+  void _onTabChanged() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  int get _index => HomeNav.tabIndex.value;
 
   static const _pages = [
     DialerScreen(),
@@ -51,7 +69,7 @@ class _HomeShellState extends State<HomeShell> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
+        onDestinationSelected: (i) => HomeNav.tabIndex.value = i,
         destinations: [
           const NavigationDestination(
             icon: Icon(Icons.dialpad_outlined),

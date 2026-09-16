@@ -91,7 +91,8 @@ class IncomingCallInfo {
   });
 }
 
-/// Thin wrapper around sip_ua with Abay domain events.
+/// Thin wrapper around sip_ua (WebRTC) with Abay domain events.
+/// For native PJSIP (classic TLS/RTP), upgrade Flutter and swap the backend.
 class SipService extends ChangeNotifier {
   SIPUAHelper? _helper;
   SipAccount? _account;
@@ -105,6 +106,8 @@ class SipService extends ChangeNotifier {
   bool _onHold = false;
   bool _speaker = false;
   bool _transportUp = false;
+  Timer? _connectWatchdog;
+  bool _registering = false;
 
   final _regController = StreamController<RegistrationState>.broadcast();
   final _regStatusController = StreamController<String>.broadcast();
@@ -141,21 +144,33 @@ class SipService extends ChangeNotifier {
     _account = account;
     await init();
     final helper = _helper!;
+    _connectWatchdog?.cancel();
+    _registering = true;
 
     try {
       if (helper.registered) {
         await helper.unregister();
       }
-      if (helper.connected) {
+      if (helper.connected || helper.connecting) {
         helper.stop();
-        await Future<void>.delayed(const Duration(milliseconds: 350));
+        await Future<void>.delayed(const Duration(milliseconds: 400));
       }
     } catch (_) {}
 
-    _setReg(RegistrationState.connecting, 'Connecting…');
+    await _startWithUrl(account, account.wsUri, isPrimary: true);
+  }
 
-    final wsUrl = account.wsUri;
+  Future<void> _startWithUrl(
+    SipAccount account,
+    String wsUrl, {
+    required bool isPrimary,
+  }) async {
+    final helper = _helper!;
+    _setReg(RegistrationState.connecting, 'Connecting $wsUrl…');
+    debugPrint('SIP start → $wsUrl');
+
     final settings = UaSettings();
+    settings.transportType = TransportType.WS;
     settings.webSocketUrl = wsUrl;
     settings.uri = account.uri;
     settings.authorizationUser =
@@ -168,23 +183,57 @@ class SipService extends ChangeNotifier {
     settings.dtmfMode = account.dtmfMode == 'SIP INFO'
         ? DtmfMode.INFO
         : DtmfMode.RFC2833;
-    if (account.useIce) {
-      settings.iceServers = [
-        {'urls': 'stun:stun.l.google.com:19302'},
-      ];
-    } else {
-      settings.iceServers = [];
-    }
+    settings.webSocketSettings.allowBadCertificate = true;
+    settings.webSocketSettings.userAgent = 'Abay Softphone/1.0';
+    settings.connectionRecoveryMaxInterval = 8;
+    settings.connectionRecoveryMinInterval = 2;
+    settings.iceServers = [
+      {'urls': 'stun:stun.l.google.com:19302'},
+    ];
 
     try {
       await helper.start(settings);
-    } catch (e) {
-      _setReg(RegistrationState.failed, 'Start failed: $e');
+    } catch (e, st) {
+      debugPrint('SIP start failed: $e\n$st');
+      final msg = e is TypeError
+          ? 'SIP stack configuration error (check server/transport)'
+          : 'Start failed: $e';
+      _setReg(RegistrationState.failed, msg);
       _errorController.add('Unable to start SIP stack: $e');
+      _registering = false;
+      return;
     }
+
+    _connectWatchdog?.cancel();
+    _connectWatchdog = Timer(const Duration(seconds: 8), () async {
+      if (!_registering) return;
+      if (_regState == RegistrationState.registered) return;
+      if (_regState != RegistrationState.connecting) return;
+      if (!isPrimary) {
+        _setReg(
+          RegistrationState.failed,
+          'Cannot reach $wsUrl — check host, port, and path',
+        );
+        _errorController.add(
+          'Could not connect to $wsUrl.\n'
+          'Tried ${account.wsUri} and ${account.alternateWsUri}.',
+        );
+        _registering = false;
+        return;
+      }
+      debugPrint(
+          'SIP primary connect timeout → trying ${account.alternateWsUri}');
+      try {
+        helper.stop();
+      } catch (_) {}
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      await _startWithUrl(account, account.alternateWsUri, isPrimary: false);
+    });
   }
 
   Future<void> unregister() async {
+    _connectWatchdog?.cancel();
+    _registering = false;
     try {
       await _helper?.unregister();
     } catch (_) {}
@@ -207,7 +256,11 @@ class SipService extends ChangeNotifier {
       return;
     }
 
-    final uri = Formatters.normalizeTarget(target, domain: account.domain);
+    final uri = Formatters.normalizeTarget(
+      target,
+      domain: account.effectiveDomain,
+    );
+    debugPrint('SIP INVITE → $uri via ${account.wsUri}');
     try {
       final ok = await helper.call(uri, voiceOnly: !video);
       if (!ok) _errorController.add('Unable to start call');
@@ -312,12 +365,14 @@ class SipService extends ChangeNotifier {
     }
   }
 
-  Future<void> transfer(String target, {bool attended = false}) async {
+  Future<void> transfer(String target) async {
     final call = _currentCall();
-    final account = _account;
-    if (call == null || account == null) return;
-    final uri = Formatters.normalizeTarget(target, domain: account.domain);
+    if (call == null) return;
     try {
+      final uri = Formatters.normalizeTarget(
+        target,
+        domain: _account?.effectiveDomain,
+      );
       call.refer(uri);
     } catch (e) {
       _errorController.add('Transfer failed: $e');
@@ -325,34 +380,21 @@ class SipService extends ChangeNotifier {
   }
 
   Future<void> sendMessage(String target, String body) async {
-    final helper = _helper;
     final account = _account;
+    final helper = _helper;
     if (helper == null || account == null) {
-      _errorController.add('No SIP account configured');
+      _errorController.add('Register before sending messages');
       return;
     }
-    final uri = Formatters.normalizeTarget(target, domain: account.domain);
     try {
+      final uri = Formatters.normalizeTarget(
+        target,
+        domain: account.effectiveDomain,
+      );
       helper.sendMessage(uri, body);
     } catch (e) {
-      _errorController.add('Message failed: $e');
+      _errorController.add('MESSAGE failed: $e');
     }
-  }
-
-  @override
-  void dispose() {
-    _tick?.cancel();
-    try {
-      _helper?.stop();
-    } catch (_) {}
-    _regController.close();
-    _regStatusController.close();
-    _activeController.close();
-    _incomingController.close();
-    _dtmfController.close();
-    _messageController.close();
-    _errorController.close();
-    super.dispose();
   }
 
   Call? _currentCall() {
@@ -398,6 +440,8 @@ class SipService extends ChangeNotifier {
   void handleRegistration(sip_ua.RegistrationState state) {
     switch (state.state) {
       case RegistrationStateEnum.REGISTERED:
+        _connectWatchdog?.cancel();
+        _registering = false;
         _setReg(RegistrationState.registered, 'Registered');
         break;
       case RegistrationStateEnum.UNREGISTERED:
@@ -414,14 +458,27 @@ class SipService extends ChangeNotifier {
   }
 
   void handleTransport(TransportState state) {
-    _transportUp = state.state == TransportStateEnum.CONNECTED ||
-        state.state == TransportStateEnum.CONNECTING;
-    if (state.state == TransportStateEnum.CONNECTING) {
-      _setReg(RegistrationState.connecting, 'Connecting transport…');
-    } else if (state.state == TransportStateEnum.DISCONNECTED) {
-      if (_regState == RegistrationState.registered) {
-        _setReg(RegistrationState.unregistered, 'Transport disconnected');
-      }
+    final up = state.state == TransportStateEnum.CONNECTED;
+    _transportUp = up || state.state == TransportStateEnum.CONNECTING;
+    switch (state.state) {
+      case TransportStateEnum.CONNECTING:
+        _setReg(RegistrationState.connecting, 'Connecting transport…');
+        break;
+      case TransportStateEnum.CONNECTED:
+        _setReg(RegistrationState.connecting, 'Transport up — registering…');
+        break;
+      case TransportStateEnum.DISCONNECTED:
+        if (_regState == RegistrationState.registered) {
+          _setReg(RegistrationState.unregistered, 'Transport disconnected');
+        } else if (_regState == RegistrationState.connecting) {
+          _setReg(
+            RegistrationState.failed,
+            'Transport disconnected — ${_account?.wsUri ?? 'server unreachable'}',
+          );
+        }
+        break;
+      case TransportStateEnum.NONE:
+        break;
     }
     notifyListeners();
   }
@@ -430,10 +487,9 @@ class SipService extends ChangeNotifier {
     final id = call.id ?? 'unknown';
     _calls[id] = call;
     final remote = Formatters.prettyUri(call.remote_identity ?? '');
-    final display =
-        (call.remote_display_name?.isNotEmpty ?? false)
-            ? call.remote_display_name!
-            : remote;
+    final display = (call.remote_display_name?.isNotEmpty ?? false)
+        ? call.remote_display_name!
+        : remote;
     final isRemote = state.originator == Originator.remote;
     final hasVideo = !(state.audio ?? call.voiceOnly);
 
@@ -527,8 +583,20 @@ class SipService extends ChangeNotifier {
         _calls.remove(id);
         if (was != null && state.state == CallStateEnum.FAILED) {
           final cause = state.cause?.reason_phrase ?? 'unknown';
+          final code = state.cause?.status_code;
+          final detail = code != null ? '$code $cause' : cause;
+          debugPrint('SIP call failed: $detail');
           if (!_errorController.isClosed) {
-            _errorController.add('Call failed: $cause');
+            final friendly = switch (code) {
+              488 =>
+                'Call rejected (488). Endpoint may not be WebRTC-enabled.',
+              404 => 'User not found (404).',
+              403 => 'Forbidden (403).',
+              486 => 'User busy (486).',
+              603 => 'Call declined.',
+              _ => 'Call failed: $detail',
+            };
+            _errorController.add(friendly);
           }
         }
         _pushActive();
@@ -546,6 +614,23 @@ class SipService extends ChangeNotifier {
 
   void handleError(String message) {
     if (!_errorController.isClosed) _errorController.add(message);
+  }
+
+  @override
+  void dispose() {
+    _connectWatchdog?.cancel();
+    _tick?.cancel();
+    try {
+      _helper?.stop();
+    } catch (_) {}
+    _regController.close();
+    _regStatusController.close();
+    _activeController.close();
+    _incomingController.close();
+    _dtmfController.close();
+    _messageController.close();
+    _errorController.close();
+    super.dispose();
   }
 }
 

@@ -78,7 +78,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     itemCount: messages.length,
                     itemBuilder: (context, i) {
                       final m = messages[i];
-                      final out = m.direction == MessageDirection.outgoing;
+                      final out = m.direction == MessageDirection.outbound;
                       return Align(
                         alignment:
                             out ? Alignment.centerRight : Alignment.centerLeft,

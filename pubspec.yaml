@@ -13,7 +13,9 @@ dependencies:
   flutter_localizations:
     sdk: flutter
 
-  # SIP / VoIP
+  # SIP / VoIP — WebRTC softphone stack.
+  # For native PJSIP (Zoiper-style TLS/RTP) upgrade Flutter to ≥3.47 (Dart ≥3.12)
+  # and add pjsip_connect_flutter ^1.0.2 instead.
   sip_ua: ^1.1.0
   flutter_webrtc: ^1.6.2
 

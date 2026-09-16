@@ -70,8 +70,10 @@ class AccountProvider extends ChangeNotifier {
       password: '',
       domain: '',
       server: '',
-      port: 5060,
-      transport: SipTransport.udp,
+      port: 5061,
+      transport: SipTransport.tls,
+      autoDetectTransport: true,
+      useIce: false,
     );
   }
 

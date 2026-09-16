@@ -20,6 +20,7 @@ class SipAccount {
   final String dtmfMode;
   final bool autoAnswer;
   final int autoAnswerDelayMs;
+  final bool autoDetectTransport;
 
   const SipAccount({
     required this.id,
@@ -29,8 +30,8 @@ class SipAccount {
     required this.password,
     required this.domain,
     required this.server,
-    this.port = 5060,
-    this.transport = SipTransport.udp,
+    this.port = 5061,
+    this.transport = SipTransport.tls,
     this.enabled = true,
     this.useSrtp = false,
     this.useIce = false,
@@ -39,22 +40,107 @@ class SipAccount {
     this.dtmfMode = 'RFC2833',
     this.autoAnswer = false,
     this.autoAnswerDelayMs = 0,
+    this.autoDetectTransport = true,
   });
 
-  String get uri => 'sip:$username@$domain';
+  /// Host used for SIP URI / WebSocket — server wins, domain as fallback.
+  /// Strips optional port and path (e.g. `pbx.example.com:8089/ws`).
+  String get host {
+    final s = server.trim().isNotEmpty ? server.trim() : domain.trim();
+    return _splitServer(s).host;
+  }
+
+  /// Optional WebSocket path (Asterisk `/ws`, 3CX `/websocket`, …).
+  /// Defaults to `/ws` on Asterisk's standard 8089/8088 HTTP ports.
+  String get wsPath {
+    final p = _splitServer(server.trim()).path;
+    if (p.isNotEmpty) return p;
+    if (port == 8089 || port == 8088) return '/ws';
+    return '';
+  }
+
+  /// Port typed in the server field, if any.
+  int? get serverPortHint => _splitServer(server.trim()).port;
+
+  /// SIP realm/domain — defaults to server host when domain not set separately.
+  String get effectiveDomain {
+    final d = domain.trim();
+    if (d.isNotEmpty) return d;
+    return host;
+  }
+
+  bool get isIpHost {
+    final h = host;
+    if (h.isEmpty) return false;
+    final v4 = h.split('.');
+    if (v4.length == 4) {
+      for (final p in v4) {
+        final n = int.tryParse(p);
+        if (n == null || n < 0 || n > 255) return false;
+      }
+      return true;
+    }
+    return h.contains(':');
+  }
+
+  String get uri => 'sip:$username@$effectiveDomain';
+
+  /// Destination URI for dialing (classic SIP).
+  String get dialUri => 'sip:$username@$effectiveDomain';
   String get wsUri {
     final scheme = switch (transport) {
       SipTransport.tls => 'wss',
       SipTransport.tcp => 'ws',
       SipTransport.udp => 'ws',
     };
-    final wsPort = switch (transport) {
-      SipTransport.tls => port == 5060 ? 7443 : port,
-      _ => port == 5060 ? 8080 : port,
-    };
-    // Common WSS/WS PBX endpoints; overridable via server:port.
-    final host = server;
-    return '$scheme://$host:$wsPort';
+    final h = host;
+    final p = port;
+    final path = wsPath;
+    return '$scheme://$h:$p$path';
+  }
+
+  /// Alternate URL to try if the primary transport fails (WSS ↔ WS).
+  String get alternateWsUri {
+    if (transport == SipTransport.tls) {
+      // WSS failed → plain WS (Asterisk often has 8088 HTTP, path /ws).
+      final altPort = port == 8089 ? 8088 : 8080;
+      final altPath = altPort == 8088 ? '/ws' : wsPath;
+      return 'ws://$host:$altPort$altPath';
+    }
+    // WS failed → WSS on Asterisk TLS HTTP port.
+    return 'wss://$host:8089/ws';
+  }
+
+  static ({String host, int? port, String path}) _splitServer(String raw) {
+    var s = raw.trim();
+    if (s.isEmpty) return (host: '', port: null, path: '');
+    s = s.replaceFirst(RegExp(r'^(wss?|https?)://', caseSensitive: false), '');
+    var path = '';
+    final slash = s.indexOf('/');
+    if (slash >= 0) {
+      path = s.substring(slash);
+      s = s.substring(0, slash);
+    }
+    if (path.isNotEmpty && !path.startsWith('/')) path = '/$path';
+    int? port;
+    if (s.startsWith('[')) {
+      final end = s.indexOf(']');
+      if (end > 0) {
+        final rest = s.substring(end + 1);
+        if (rest.startsWith(':')) port = int.tryParse(rest.substring(1));
+        s = s.substring(0, end + 1);
+      }
+    } else {
+      final parts = s.split(':');
+      if (parts.length == 2) {
+        final p = int.tryParse(parts[1]);
+        if (p != null) {
+          port = p;
+          s = parts[0];
+        }
+      }
+    }
+    return (host: s, port: port, path: path);
   }
 
   SipAccount copyWith({
@@ -75,6 +161,7 @@ class SipAccount {
     String? dtmfMode,
     bool? autoAnswer,
     int? autoAnswerDelayMs,
+    bool? autoDetectTransport,
   }) {
     return SipAccount(
       id: id ?? this.id,
@@ -94,6 +181,7 @@ class SipAccount {
       dtmfMode: dtmfMode ?? this.dtmfMode,
       autoAnswer: autoAnswer ?? this.autoAnswer,
       autoAnswerDelayMs: autoAnswerDelayMs ?? this.autoAnswerDelayMs,
+      autoDetectTransport: autoDetectTransport ?? this.autoDetectTransport,
     );
   }
 
@@ -115,6 +203,7 @@ class SipAccount {
         'dtmfMode': dtmfMode,
         'autoAnswer': autoAnswer,
         'autoAnswerDelayMs': autoAnswerDelayMs,
+        'autoDetectTransport': autoDetectTransport,
       };
 
   factory SipAccount.fromMap(Map<String, dynamic> map) {
@@ -139,6 +228,7 @@ class SipAccount {
       dtmfMode: (map['dtmfMode'] as String?) ?? 'RFC2833',
       autoAnswer: (map['autoAnswer'] as bool?) ?? false,
       autoAnswerDelayMs: (map['autoAnswerDelayMs'] as int?) ?? 0,
+      autoDetectTransport: (map['autoDetectTransport'] as bool?) ?? true,
     );
   }
 

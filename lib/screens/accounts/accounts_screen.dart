@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme/app_colors.dart';
+import '../../models/sip_account.dart';
 import '../../providers/account_provider.dart';
 import '../../services/sip_service.dart';
 import 'account_edit_screen.dart';
+import 'account_settings_screen.dart';
 import '../settings/settings_screen.dart';
 
 class AccountsScreen extends StatelessWidget {
@@ -70,7 +72,9 @@ class AccountsScreen extends StatelessWidget {
                       style: const TextStyle(fontWeight: FontWeight.w700),
                     ),
                     subtitle: Text(
-                      '${a.username}@${a.domain}\n${a.transport.name.toUpperCase()} · ${a.server}:${a.port}',
+                      '${a.username}@${a.effectiveDomain}\n'
+                      '${a.transport == SipTransport.tls ? 'WSS' : 'WS'} · ${a.host}:${a.port}'
+                      '${a.autoDetectTransport ? ' · auto' : ''}',
                     ),
                     isThreeLine: true,
                     trailing: PopupMenuButton<String>(
@@ -78,6 +82,14 @@ class AccountsScreen extends StatelessWidget {
                         switch (v) {
                           case 'use':
                             await accounts.setActive(a.id);
+                            break;
+                          case 'settings':
+                            await Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) =>
+                                    AccountSettingsScreen(account: a),
+                              ),
+                            );
                             break;
                           case 'edit':
                             await Navigator.of(context).push(
@@ -120,7 +132,10 @@ class AccountsScreen extends StatelessWidget {
                         if (!isActive)
                           const PopupMenuItem(
                               value: 'use', child: Text('Use this account')),
-                        const PopupMenuItem(value: 'edit', child: Text('Edit')),
+                        const PopupMenuItem(
+                            value: 'settings', child: Text('Account settings')),
+                        const PopupMenuItem(
+                            value: 'edit', child: Text('Re-run setup')),
                         const PopupMenuItem(
                             value: 'register', child: Text('Re-register')),
                         const PopupMenuItem(
@@ -131,7 +146,7 @@ class AccountsScreen extends StatelessWidget {
                     ),
                     onTap: () => Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (_) => AccountEditScreen(existing: a),
+                        builder: (_) => AccountSettingsScreen(account: a),
                       ),
                     ),
                   ),
